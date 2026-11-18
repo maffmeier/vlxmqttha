@@ -304,6 +304,33 @@ class VeluxMqttHomeassistant:
         self.mqttc = mqtt.Client(MQTT_CLIENT_ID)
         self.pyvlx = None
         self.mqttDevices = {}
+        self.trackSubscriptions()
+
+    def trackSubscriptions(self):
+        # The broker forgets subscriptions of a clean session when paho reconnects
+        # on its own, so commands would silently stop arriving.
+        self.subscribedTopics = set()
+        subscribe = self.mqttc.subscribe
+        unsubscribe = self.mqttc.unsubscribe
+
+        def trackedSubscribe(topic, *args, **kwargs):
+            self.subscribedTopics.add(topic)
+            return subscribe(topic, *args, **kwargs)
+
+        def trackedUnsubscribe(topic, *args, **kwargs):
+            self.subscribedTopics.discard(topic)
+            return unsubscribe(topic, *args, **kwargs)
+
+        def resubscribe(client, userdata, flags, rc):
+            if rc != 0 or not self.subscribedTopics:
+                return
+            logging.info("MQTT reconnected, resubscribing %d topics" % len(self.subscribedTopics))
+            for topic in self.subscribedTopics:
+                subscribe(topic)
+
+        self.mqttc.subscribe = trackedSubscribe
+        self.mqttc.unsubscribe = trackedUnsubscribe
+        self.mqttc.on_connect = resubscribe
 
     async def connect_mqtt(self):
         logging.debug("MQTT broker : %s" % MQTT_HOST)
